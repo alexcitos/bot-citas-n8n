@@ -1,0 +1,6 @@
+.env
+*.log
+node_modules/
+# Nunca subir credenciales
+*credencial*.json
+*service-account*.json

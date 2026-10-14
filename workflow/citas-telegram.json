@@ -1,0 +1,722 @@
+{
+  "name": "Citas · Clínica Sonrisa DEMO (Telegram)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "citas-telegram",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "178588ea-d18e-4edd-9d82-b58a067f5ca5",
+      "name": "Telegram (entrada)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        400
+      ],
+      "webhookId": "66efe062-38e8-4427-a944-e3ff81e83372"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ⚙️ Configuración del negocio de la demo. Es el ÚNICO nodo que hay que\n// editar para adaptar el bot a otro negocio (servicios, horario, IDs).\nreturn [{\n  json: {\n    negocio: 'Clínica Dental Sonrisa · DEMO',\n    direccion: 'Calle Ficticia 123, Bogotá (dirección de demostración)',\n    calendar_id: 'PEGAR_ID_DEL_CALENDARIO@group.calendar.google.com',\n    sheet_id: 'PEGAR_ID_DE_LA_HOJA',\n    hoja: 'Citas',\n    alex_chat_id: 'PEGAR_TU_CHAT_ID_DE_TELEGRAM',\n    zona: 'America/Bogota',\n    offset: '-05:00',\n    // Duración en minutos de cada servicio.\n    servicios: [\n      { id: 'valoracion', nombre: 'Valoración', min: 30 },\n      { id: 'limpieza', nombre: 'Limpieza dental', min: 45 },\n      { id: 'blanqueamiento', nombre: 'Blanqueamiento', min: 60 },\n      { id: 'ortodoncia', nombre: 'Control de ortodoncia', min: 30 },\n    ],\n    // Horario por día de la semana (0 = domingo … 6 = sábado).\n    horario: {\n      1: [['08:00', '12:00'], ['14:00', '18:00']],\n      2: [['08:00', '12:00'], ['14:00', '18:00']],\n      3: [['08:00', '12:00'], ['14:00', '18:00']],\n      4: [['08:00', '12:00'], ['14:00', '18:00']],\n      5: [['08:00', '12:00'], ['14:00', '18:00']],\n      6: [['08:00', '12:00']],\n    },\n    paso_min: 30,          // cada cuánto se ofrece un turno\n    dias_adelante: 7,      // hasta cuántos días se puede agendar\n    anticipacion_min: 60,  // mínimo de minutos entre \"ahora\" y la cita\n  },\n}];\n"
+      },
+      "id": "4d3783bf-7e2d-4b65-9205-8da15ce60dfd",
+      "name": "Configuracion",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Traduce la actualización de Telegram a un formato común, igual para\n// cualquier canal: { canal, chat_id, usuario_id, nombre, texto, boton }.\n// El motor de citas solo conoce este formato, nunca el de Telegram.\nconst u = $('Telegram (entrada)').first().json.body || {};\nconst cfg = $('Configuracion').first().json;\nconst e = { canal: 'telegram', ignorar: false, texto: '', boton: '', callback_id: '' };\n\nif (u.callback_query) {\n  const q = u.callback_query;\n  e.chat_id = String((q.message && q.message.chat && q.message.chat.id) || q.from.id);\n  e.usuario_id = String(q.from.id);\n  e.nombre = [q.from.first_name, q.from.last_name].filter(Boolean).join(' ');\n  e.boton = String(q.data || '');\n  e.callback_id = String(q.id);\n} else if (u.message && typeof u.message.text === 'string') {\n  const m = u.message;\n  e.chat_id = String(m.chat.id);\n  e.usuario_id = String(m.from ? m.from.id : m.chat.id);\n  e.nombre = m.from ? [m.from.first_name, m.from.last_name].filter(Boolean).join(' ') : '';\n  e.texto = m.text.trim().slice(0, 200);\n} else {\n  // Fotos, stickers, ediciones, etc.: no se procesan.\n  e.ignorar = true;\n  e.chat_id = String((u.message && u.message.chat && u.message.chat.id) || '');\n  e.usuario_id = e.chat_id;\n}\n\ne.clave = `${e.canal}:${e.usuario_id}`;\nreturn [{ json: { ...e, cfg } }];\n"
+      },
+      "id": "4bab1228-8358-458a-adcc-52f52497177d",
+      "name": "Normalizar Telegram",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "callback",
+        "operation": "answerQuery",
+        "queryId": "={{ $json.callback_id }}",
+        "additionalFields": {}
+      },
+      "id": "026af3f0-7b42-4044-9e35-c365682aee79",
+      "name": "Responder botón",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        660,
+        180
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 🧠 Motor de citas: decide qué responder según el paso en que va cada\n// persona. No depende del canal. Devuelve una \"accion\":\n//   responder | disponibilidad | crear | listar | cancelar | humano\n// El estado de cada conversación se guarda en los datos estáticos del\n// workflow (persisten entre ejecuciones de producción).\nconst e = $input.first().json;\nconst cfg = e.cfg;\nconst OFF_MS = -5 * 60 * 60000; // Bogotá: UTC-5 todo el año (sin horario de verano)\nconst DIAS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];\nconst MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];\n\nconst esc = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst etiquetaFecha = (f) => {\n  const d = new Date(f + 'T12:00:00Z');\n  return `${DIAS[d.getUTCDay()]} ${d.getUTCDate()} ${MESES[d.getUTCMonth()]}`;\n};\nconst sumarMin = (hhmm, min) => {\n  const [h, m] = hhmm.split(':').map(Number);\n  const t = h * 60 + m + min;\n  return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;\n};\n\nconst sd = $getWorkflowStaticData('global');\nsd.sesiones = sd.sesiones || {};\nconst ahora = Date.now();\n// Limpieza: sesiones sin actividad en 24 h.\nfor (const k of Object.keys(sd.sesiones)) {\n  if (ahora - (sd.sesiones[k].t || 0) > 24 * 3600e3) delete sd.sesiones[k];\n}\n\nconst base = { canal: e.canal, chat_id: e.chat_id, clave: e.clave, cfg };\nif (e.ignorar || !e.chat_id) return [{ json: { ...base, accion: 'responder', mensaje: null } }];\n\nlet s = sd.sesiones[e.clave];\nif (!s || ahora - (s.t || 0) > 2 * 3600e3) s = { paso: 'menu' }; // 2 h sin actividad: empieza de nuevo\ns.t = ahora;\nconst guardar = () => { sd.sesiones[e.clave] = s; };\nconst salida = (accion, extra = {}) => { guardar(); return [{ json: { ...base, accion, ...extra } }]; };\nconst resp = (texto, botones = []) => salida('responder', { mensaje: { texto, botones } });\nconst filaMenu = [{ t: '🏠 Menú principal', d: 'menu:inicio' }];\n\nconst servicioPorId = (id) => cfg.servicios.find((x) => x.id === id);\n\n// Días (desde hoy) que todavía tienen horario de atención para el servicio.\nconst diasDisponibles = (min) => {\n  const lista = [];\n  const limite = ahora + cfg.anticipacion_min * 60000;\n  for (let i = 0; i <= cfg.dias_adelante; i++) {\n    const f = new Date(ahora + OFF_MS + i * 86400e3).toISOString().slice(0, 10);\n    const bloques = cfg.horario[new Date(f + 'T12:00:00Z').getUTCDay()] || [];\n    if (!bloques.length) continue;\n    const ultimoFin = Date.parse(`${f}T${bloques[bloques.length - 1][1]}:00${cfg.offset}`);\n    if (ultimoFin - min * 60000 >= limite) lista.push(f);\n  }\n  return lista;\n};\n\nconst menu = (prefijo = '') => {\n  s = { paso: 'menu', t: ahora };\n  return resp(\n    `${prefijo}🦷 <b>${esc(cfg.negocio)}</b>\\n\\n¡Hola! Soy el asistente virtual. ¿Qué quieres hacer?\\n\\n<i>Este es un negocio ficticio para demostrar una automatización con n8n.</i>`,\n    [\n      [{ t: '📅 Agendar cita', d: 'menu:agendar' }],\n      [{ t: '🗓️ Mis citas', d: 'menu:mis' }],\n      [{ t: '📍 Horarios y ubicación', d: 'menu:info' }],\n      [{ t: '👤 Hablar con una persona', d: 'menu:humano' }],\n    ],\n  );\n};\n\nconst resumen = () => {\n  s.paso = 'confirmar';\n  const srv = servicioPorId(s.servicio);\n  return resp(\n    `📋 <b>Revisa tu cita</b>\\n\\n• Servicio: ${esc(srv.nombre)} (${srv.min} min)\\n• Fecha: ${etiquetaFecha(s.fecha)}\\n• Hora: ${s.hora}\\n• A nombre de: ${esc(s.nombre)}\\n\\n¿La confirmamos?`,\n    [[{ t: '✅ Confirmar', d: 'confirmar:si' }, { t: '❌ Cancelar', d: 'confirmar:no' }]],\n  );\n};\n\nconst txt = (e.texto || '').toLowerCase();\nconst b = e.boton || '';\n\n// Volver al menú en cualquier momento.\nif (b === 'menu:inicio' || ['/start', 'hola', 'menu', 'menú', 'inicio', 'buenas', 'buenos días', 'buenas tardes'].includes(txt)) {\n  return menu();\n}\n\nif (b === 'menu:agendar') {\n  s = { paso: 'servicio', t: ahora };\n  return resp('¿Qué servicio necesitas?', [\n    ...cfg.servicios.map((x) => [{ t: `${x.nombre} · ${x.min} min`, d: `srv:${x.id}` }]),\n    filaMenu,\n  ]);\n}\n\nif (b.startsWith('srv:')) {\n  const srv = servicioPorId(b.slice(4));\n  if (!srv) return menu();\n  s = { paso: 'dia', servicio: srv.id, t: ahora };\n  const dias = diasDisponibles(srv.min);\n  if (!dias.length) return resp('No hay días disponibles en este momento. 😕', [filaMenu]);\n  const filas = [];\n  for (let i = 0; i < dias.length; i += 2) {\n    filas.push(dias.slice(i, i + 2).map((f) => ({ t: etiquetaFecha(f), d: `dia:${f}` })));\n  }\n  return resp(`<b>${esc(srv.nombre)}</b> (${srv.min} min).\\n¿Qué día prefieres?`, [...filas, filaMenu]);\n}\n\nif (b.startsWith('dia:')) {\n  const f = b.slice(4);\n  const srv = servicioPorId(s.servicio);\n  if (!srv || !diasDisponibles(srv.min).includes(f)) return menu('Esa opción ya no está disponible.\\n\\n');\n  s.fecha = f;\n  s.paso = 'hora';\n  return salida('disponibilidad', { fecha: f, servicio: srv });\n}\n\nif (b.startsWith('hora:')) {\n  const h = b.slice(5);\n  if (s.paso !== 'hora' || !(s.horas || []).includes(h)) return menu('Ese horario ya no está disponible.\\n\\n');\n  s.hora = h;\n  s.paso = 'nombre';\n  const botones = e.nombre ? [[{ t: `Usar «${e.nombre.slice(0, 40)}»`, d: 'nombre:perfil' }], filaMenu] : [filaMenu];\n  return resp('✍️ ¿A nombre de quién agendamos la cita?\\nEscribe nombre y apellido.', botones);\n}\n\nif (b === 'nombre:perfil' && s.paso === 'nombre' && e.nombre) {\n  s.nombre = e.nombre.slice(0, 60);\n  return resumen();\n}\n\nif (s.paso === 'nombre' && e.texto) {\n  const n = e.texto.replace(/\\s+/g, ' ').trim();\n  if (n.length < 3 || n.length > 60 || !/^[\\p{L} .'-]+$/u.test(n)) {\n    return resp('Por favor escribe solo nombre y apellido (entre 3 y 60 letras).', [filaMenu]);\n  }\n  s.nombre = n;\n  return resumen();\n}\n\nif (b === 'confirmar:si' && s.paso === 'confirmar') {\n  const srv = servicioPorId(s.servicio);\n  const fin = sumarMin(s.hora, srv.min);\n  const idCita = 'CS-' + ahora.toString(36).toUpperCase();\n  const registro = new Date(ahora + OFF_MS).toISOString().slice(0, 16).replace('T', ' ');\n  const cita = { id_cita: idCita, servicio: srv.nombre, min: srv.min, fecha: s.fecha, hora: s.hora, fin, nombre: s.nombre };\n  s = { paso: 'menu', t: ahora };\n  return salida('crear', {\n    cita,\n    evento: {\n      summary: `${srv.nombre} · ${cita.nombre}`,\n      description: `Cita ${idCita} agendada por el bot DEMO (canal: ${e.canal}).\\nNegocio ficticio de demostración.`,\n      start: { dateTime: `${cita.fecha}T${cita.hora}:00${cfg.offset}`, timeZone: cfg.zona },\n      end: { dateTime: `${cita.fecha}T${fin}:00${cfg.offset}`, timeZone: cfg.zona },\n      extendedProperties: { private: { usuario: e.clave, canal: e.canal, id_cita: idCita } },\n    },\n    fila: [idCita, registro, e.canal, e.usuario_id, cita.nombre, srv.nombre, cita.fecha, cita.hora, fin, 'agendada'],\n    aviso: `🦷 Nueva cita (DEMO)\\n${srv.nombre} · ${etiquetaFecha(cita.fecha)} ${cita.hora}\\nA nombre de: ${cita.nombre}\\nCanal: ${e.canal} · ${idCita}`,\n  });\n}\n\nif (b === 'confirmar:no') return menu('❌ Listo, no agendamos nada.\\n\\n');\n\nif (b === 'menu:mis') {\n  return salida('listar', { desde: new Date(ahora).toISOString() });\n}\n\nif (b.startsWith('cancelar:')) {\n  const id = b.slice(9);\n  const cita = (s.citas || []).find((x) => x.id === id);\n  if (!cita) return menu('No encontré esa cita. Revisa de nuevo en «Mis citas».\\n\\n');\n  s.citas = s.citas.filter((x) => x.id !== id);\n  const registro = new Date(ahora + OFF_MS).toISOString().slice(0, 16).replace('T', ' ');\n  return salida('cancelar', {\n    evento_id: id,\n    cita,\n    fila: [cita.id_cita || '', registro, e.canal, e.usuario_id, cita.nombre || '', cita.servicio, cita.fecha, cita.hora, cita.fin || '', 'cancelada', id],\n    aviso: `🦷 Cita cancelada (DEMO)\\n${cita.servicio} · ${etiquetaFecha(cita.fecha)} ${cita.hora}\\nCanal: ${e.canal}`,\n  });\n}\n\nif (b === 'menu:info') {\n  const nombresDia = (d) => ({ 1: 'Lunes', 2: 'Martes', 3: 'Miércoles', 4: 'Jueves', 5: 'Viernes', 6: 'Sábado', 0: 'Domingo' })[d];\n  const lineas = Object.keys(cfg.horario).map((d) => `• ${nombresDia(Number(d))}: ${cfg.horario[d].map((x) => x.join('–')).join(' y ')}`);\n  return resp(`📍 <b>${esc(cfg.negocio)}</b>\\n${esc(cfg.direccion)}\\n\\n🕒 <b>Horario</b>\\n${lineas.join('\\n')}`, [[{ t: '📅 Agendar cita', d: 'menu:agendar' }], filaMenu]);\n}\n\nif (b === 'menu:humano') {\n  return salida('humano', {\n    mensaje: { texto: '👤 Listo, avisé a una persona del equipo. Te escribirán por este chat en horario de atención.\\n\\n<i>(En esta demo, el aviso le llega al creador del bot.)</i>', botones: [filaMenu] },\n    aviso: `👤 Alguien pide hablar con una persona (DEMO)\\nNombre: ${e.nombre || 'sin nombre'}\\nCanal: ${e.canal} · chat ${e.chat_id}`,\n  });\n}\n\n// Cualquier otra cosa: si está a mitad de un proceso, pedir que use los botones.\nif (s.paso !== 'menu') {\n  return resp('Toca una de las opciones de arriba 👆 o vuelve al menú.', [filaMenu]);\n}\nreturn menu();\n"
+      },
+      "id": "15f75f15-f911-42e2-911a-5a8d4b6f6291",
+      "name": "Motor",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 6,
+        "output": "={{ Math.max(0, ['responder','disponibilidad','crear','listar','cancelar','humano'].indexOf($json.accion)) }}",
+        "options": {}
+      },
+      "id": "f8a2dfd5-7117-44fa-943d-d4b21df31c8f",
+      "name": "¿Qué acción?",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        880,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://www.googleapis.com/calendar/v3/freeBusy",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleApi",
+        "options": {},
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ timeMin: $json.fecha + 'T00:00:00' + $json.cfg.offset, timeMax: $json.fecha + 'T23:59:59' + $json.cfg.offset, timeZone: $json.cfg.zona, items: [{ id: $json.cfg.calendar_id }] }) }}"
+      },
+      "id": "a0db715d-2a32-4cb5-84d1-8bcf1a3b9e7e",
+      "name": "Calendar: horarios ocupados",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1120,
+        160
+      ],
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Calcula los turnos libres del día elegido a partir de la respuesta\n// \"freeBusy\" de Google Calendar y del horario de atención.\nconst m = $('Motor').first().json;\nconst cfg = m.cfg;\nconst r = $input.first().json;\nconst sd = $getWorkflowStaticData('global');\nsd.sesiones = sd.sesiones || {};\nconst s = sd.sesiones[m.clave] || { paso: 'menu' };\nconst OFF_MS = -5 * 60 * 60000;\nconst DIAS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];\nconst MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];\nconst etiqueta = (f) => { const d = new Date(f + 'T12:00:00Z'); return `${DIAS[d.getUTCDay()]} ${d.getUTCDate()} ${MESES[d.getUTCMonth()]}`; };\nconst filaMenu = [{ t: '🏠 Menú principal', d: 'menu:inicio' }];\nconst salir = (texto, botones) => [{ json: { ...m, mensaje: { texto, botones } } }];\n\nconst cal = r && r.calendars && r.calendars[cfg.calendar_id];\nif (!cal || cal.errors) {\n  return salir('😕 No pude consultar la agenda en este momento. Intenta de nuevo en unos minutos.', [filaMenu]);\n}\n\nconst ocupado = (cal.busy || []).map((x) => [Date.parse(x.start), Date.parse(x.end)]);\nconst dur = m.servicio.min * 60000;\nconst fecha = m.fecha;\nconst bloques = cfg.horario[new Date(fecha + 'T12:00:00Z').getUTCDay()] || [];\nconst limite = Date.now() + cfg.anticipacion_min * 60000;\nconst libres = [];\nfor (const [a, z] of bloques) {\n  let t = Date.parse(`${fecha}T${a}:00${cfg.offset}`);\n  const fin = Date.parse(`${fecha}T${z}:00${cfg.offset}`);\n  while (t + dur <= fin) {\n    if (t >= limite && !ocupado.some(([ini, f]) => t < f && t + dur > ini)) libres.push(t);\n    t += cfg.paso_min * 60000;\n  }\n}\nconst horas = libres.slice(0, 16).map((t) => new Date(t + OFF_MS).toISOString().slice(11, 16));\n\nconst otroDia = [{ t: '⬅️ Elegir otro día', d: `srv:${m.servicio.id}` }];\nif (!horas.length) {\n  return salir(`😕 No quedan turnos libres el ${etiqueta(fecha)} para ${m.servicio.nombre}.`, [otroDia, filaMenu]);\n}\n\ns.horas = horas;\ns.paso = 'hora';\ns.t = Date.now();\nsd.sesiones[m.clave] = s;\n\nconst filas = [];\nfor (let i = 0; i < horas.length; i += 4) {\n  filas.push(horas.slice(i, i + 4).map((h) => ({ t: h, d: `hora:${h}` })));\n}\nreturn salir(\n  `🕒 Turnos libres el <b>${etiqueta(fecha)}</b> para ${m.servicio.nombre} (${m.servicio.min} min):`,\n  [...filas, otroDia, filaMenu],\n);\n"
+      },
+      "id": "b4e5a58e-099f-4d9e-9477-5244acbef7fa",
+      "name": "Armar horarios libres",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://www.googleapis.com/calendar/v3/calendars/{{ encodeURIComponent($json.cfg.calendar_id) }}/events",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleApi",
+        "options": {},
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.evento) }}"
+      },
+      "id": "14269c79-2b78-4a5c-88d8-702dc6f51b02",
+      "name": "Calendar: crear evento",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1120,
+        360
+      ],
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 2,
+        "output": "={{ $json.id ? 0 : 1 }}",
+        "options": {}
+      },
+      "id": "4014726d-5afd-44a9-901f-dd03ea355356",
+      "name": "¿Se creó?",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1340,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://sheets.googleapis.com/v4/spreadsheets/{{ $('Motor').first().json.cfg.sheet_id }}/values/{{ encodeURIComponent($('Motor').first().json.cfg.hoja + '!A:K') }}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleApi",
+        "options": {},
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ values: [[ ...$('Motor').first().json.fila, $('Calendar: crear evento').first().json.id ]] }) }}"
+      },
+      "id": "ab0e84b1-8ae6-456d-b436-432068b82caa",
+      "name": "Sheets: registrar cita",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1560,
+        300
+      ],
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Motor').first().json.cfg.alex_chat_id }}",
+        "text": "={{ $('Motor').first().json.aviso }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "d3cbb8c3-2eec-4680-b9c4-8ec672c5e352",
+      "name": "Avisar a Alex: cita nueva",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1780,
+        300
+      ],
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Mensaje final después de intentar crear el evento en Google Calendar.\nconst m = $('Motor').first().json;\nconst ev = $('Calendar: crear evento').first().json;\nconst filaMenu = [{ t: '🏠 Menú principal', d: 'menu:inicio' }];\nconst DIAS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];\nconst MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];\nconst d = new Date(m.cita.fecha + 'T12:00:00Z');\nconst fecha = `${DIAS[d.getUTCDay()]} ${d.getUTCDate()} ${MESES[d.getUTCMonth()]}`;\nconst esc = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n\nif (!ev || !ev.id) {\n  return [{ json: { ...m, mensaje: { texto: '😕 No pude guardar la cita en la agenda. Intenta de nuevo en unos minutos.', botones: [filaMenu] } } }];\n}\nreturn [{\n  json: {\n    ...m,\n    mensaje: {\n      texto: `✅ <b>¡Cita agendada!</b>\\n\\n• ${esc(m.cita.servicio)}\\n• ${fecha}, ${m.cita.hora} – ${m.cita.fin}\\n• A nombre de: ${esc(m.cita.nombre)}\\n• Código: <code>${m.cita.id_cita}</code>\\n\\nPuedes verla o cancelarla en «Mis citas».`,\n      botones: [[{ t: '🗓️ Mis citas', d: 'menu:mis' }], filaMenu],\n    },\n  },\n}];\n"
+      },
+      "id": "ef458fa3-6e67-43a9-8256-732ab8099c9c",
+      "name": "Confirmación",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2000,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://www.googleapis.com/calendar/v3/calendars/{{ encodeURIComponent($json.cfg.calendar_id) }}/events",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleApi",
+        "options": {},
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "privateExtendedProperty",
+              "value": "={{ 'usuario=' + $json.clave }}"
+            },
+            {
+              "name": "timeMin",
+              "value": "={{ $json.desde }}"
+            },
+            {
+              "name": "singleEvents",
+              "value": "true"
+            },
+            {
+              "name": "orderBy",
+              "value": "startTime"
+            },
+            {
+              "name": "maxResults",
+              "value": "5"
+            }
+          ]
+        }
+      },
+      "id": "56c283c6-46d1-4236-9d3e-7533dc109776",
+      "name": "Calendar: mis citas",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1120,
+        560
+      ],
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Lista las próximas citas de esta persona (filtradas en Google Calendar\n// por la propiedad privada \"usuario\") y ofrece cancelarlas.\nconst m = $('Motor').first().json;\nconst r = $input.first().json;\nconst sd = $getWorkflowStaticData('global');\nsd.sesiones = sd.sesiones || {};\nconst s = sd.sesiones[m.clave] || { paso: 'menu' };\nconst OFF_MS = -5 * 60 * 60000;\nconst DIAS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];\nconst MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];\nconst filaMenu = [{ t: '🏠 Menú principal', d: 'menu:inicio' }];\nconst esc = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst salir = (texto, botones) => [{ json: { ...m, mensaje: { texto, botones } } }];\n\nif (!r || r.error || !Array.isArray(r.items)) {\n  return salir('😕 No pude consultar tus citas en este momento. Intenta de nuevo en unos minutos.', [filaMenu]);\n}\n\nconst citas = r.items.filter((x) => x.start && x.start.dateTime).map((x) => {\n  const ini = new Date(Date.parse(x.start.dateTime) + OFF_MS).toISOString();\n  const fin = new Date(Date.parse(x.end.dateTime) + OFF_MS).toISOString();\n  const [servicio, nombre] = String(x.summary || '').split(' · ');\n  const p = (x.extendedProperties && x.extendedProperties.private) || {};\n  return { id: x.id, id_cita: p.id_cita || '', servicio: servicio || 'Cita', nombre: nombre || '', fecha: ini.slice(0, 10), hora: ini.slice(11, 16), fin: fin.slice(11, 16) };\n});\n\ns.citas = citas;\ns.paso = 'menu';\ns.t = Date.now();\nsd.sesiones[m.clave] = s;\n\nif (!citas.length) {\n  return salir('No tienes citas próximas. ¿Agendamos una?', [[{ t: '📅 Agendar cita', d: 'menu:agendar' }], filaMenu]);\n}\nconst etiqueta = (f) => { const d = new Date(f + 'T12:00:00Z'); return `${DIAS[d.getUTCDay()]} ${d.getUTCDate()} ${MESES[d.getUTCMonth()]}`; };\nconst lineas = citas.map((c) => `• ${esc(c.servicio)}: ${etiqueta(c.fecha)}, ${c.hora}`);\nreturn salir(\n  `🗓️ <b>Tus próximas citas</b>\\n\\n${lineas.join('\\n')}`,\n  [...citas.map((c) => [{ t: `❌ Cancelar ${etiqueta(c.fecha)} ${c.hora}`, d: `cancelar:${c.id}` }]), filaMenu],\n);\n"
+      },
+      "id": "8d43829a-179d-432e-ac8c-1dfc08504b1f",
+      "name": "Armar mis citas",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "method": "DELETE",
+        "url": "=https://www.googleapis.com/calendar/v3/calendars/{{ encodeURIComponent($json.cfg.calendar_id) }}/events/{{ encodeURIComponent($json.evento_id) }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleApi",
+        "options": {}
+      },
+      "id": "ef1adb77-5b3a-4df5-9a5f-f8364e00bb3c",
+      "name": "Calendar: cancelar evento",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1120,
+        760
+      ],
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 2,
+        "output": "={{ $json.error ? 1 : 0 }}",
+        "options": {}
+      },
+      "id": "c4a0bcaf-a103-4bbc-80b7-1de22c4915c1",
+      "name": "¿Se canceló?",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1340,
+        760
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://sheets.googleapis.com/v4/spreadsheets/{{ $('Motor').first().json.cfg.sheet_id }}/values/{{ encodeURIComponent($('Motor').first().json.cfg.hoja + '!A:K') }}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleApi",
+        "options": {},
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ values: [ $('Motor').first().json.fila ] }) }}"
+      },
+      "id": "a82d0845-fad3-4c33-b3c6-1279685d9014",
+      "name": "Sheets: registrar cancelación",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1560,
+        700
+      ],
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Motor').first().json.cfg.alex_chat_id }}",
+        "text": "={{ $('Motor').first().json.aviso }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "761803e7-af68-4fa2-a465-8b53eba2bce0",
+      "name": "Avisar a Alex: cancelación",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1780,
+        700
+      ],
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Mensaje después de intentar borrar el evento en Google Calendar.\n// Google responde vacío (204) si salió bien; con error, n8n deja \"error\".\nconst m = $('Motor').first().json;\nconst r = $('Calendar: cancelar evento').first().json;\nconst filaMenu = [{ t: '🏠 Menú principal', d: 'menu:inicio' }];\nconst ok = !(r && r.error);\nconst DIAS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];\nconst MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];\nconst d = new Date(m.cita.fecha + 'T12:00:00Z');\nconst fecha = `${DIAS[d.getUTCDay()]} ${d.getUTCDate()} ${MESES[d.getUTCMonth()]}`;\nreturn [{\n  json: {\n    ...m,\n    mensaje: ok\n      ? { texto: `🗑️ Cita cancelada: ${m.cita.servicio}, ${fecha} ${m.cita.hora}.\\nEse horario quedó libre para otra persona.`, botones: [[{ t: '📅 Agendar otra cita', d: 'menu:agendar' }], filaMenu] }\n      : { texto: '😕 No pude cancelar la cita en este momento. Intenta de nuevo en unos minutos.', botones: [[{ t: '🗓️ Mis citas', d: 'menu:mis' }], filaMenu] },\n  },\n}];\n"
+      },
+      "id": "1575020e-5f6c-475e-9ab3-7251ccc599bd",
+      "name": "Cancelación",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2000,
+        760
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Motor').first().json.cfg.alex_chat_id }}",
+        "text": "={{ $('Motor').first().json.aviso }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "1ea26319-c021-45bf-a195-1d39da928f12",
+      "name": "Avisar a Alex: pide asesor",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1120,
+        960
+      ],
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Convierte el mensaje común { texto, botones } al formato de Telegram.\n// La respuesta se devuelve en la misma respuesta HTTP del webhook (método\n// \"sendMessage\"), así el token del bot no tiene que estar en el workflow.\nconst actual = $input.first().json;\nconst d = actual.mensaje !== undefined ? actual : $('Motor').first().json;\n\nif (!d.mensaje || d.canal !== 'telegram') {\n  return [{ json: { respuesta: {} } }];\n}\nconst respuesta = {\n  method: 'sendMessage',\n  chat_id: d.chat_id,\n  text: d.mensaje.texto,\n  parse_mode: 'HTML',\n  disable_web_page_preview: true,\n};\nconst teclado = (d.mensaje.botones || []).map((fila) => fila.map((x) => ({ text: x.t, callback_data: x.d })));\nif (teclado.length) respuesta.reply_markup = { inline_keyboard: teclado };\nreturn [{ json: { respuesta } }];\n"
+      },
+      "id": "fcf98f8f-4c46-4c24-9a72-d3fabe4dcc0f",
+      "name": "Salida Telegram",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.respuesta }}",
+        "options": {}
+      },
+      "id": "b25d9cc5-438c-40e4-a9ed-ef6619cd03b1",
+      "name": "Responder a Telegram",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2460,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 🦷 Bot de citas · Clínica Sonrisa DEMO\nCanal: **Telegram** (webhook propio, responde en la misma petición).\n\n1. Edita solo el nodo **Configuracion** (IDs, servicios, horario).\n2. Credenciales: *Header Auth* (webhook), *Google Service Account* (nodos Calendar/Sheets) y 2 de *Telegram* (bot demo en «Responder botón», bot de alertas en «Avisar a Alex…»).\n3. El motor no depende del canal: para WhatsApp se agrega otra entrada + normalizador + salida.",
+        "height": 260,
+        "width": 520
+      },
+      "id": "4763932a-8308-4238-9fd3-48412c1b6445",
+      "name": "Nota",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -120
+      ]
+    }
+  ],
+  "connections": {
+    "Telegram (entrada)": {
+      "main": [
+        [
+          {
+            "node": "Configuracion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Configuracion": {
+      "main": [
+        [
+          {
+            "node": "Normalizar Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalizar Telegram": {
+      "main": [
+        [
+          {
+            "node": "Responder botón",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Motor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Motor": {
+      "main": [
+        [
+          {
+            "node": "¿Qué acción?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Qué acción?": {
+      "main": [
+        [
+          {
+            "node": "Salida Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Calendar: horarios ocupados",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Calendar: crear evento",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Calendar: mis citas",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Calendar: cancelar evento",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Avisar a Alex: pide asesor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calendar: horarios ocupados": {
+      "main": [
+        [
+          {
+            "node": "Armar horarios libres",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calendar: crear evento": {
+      "main": [
+        [
+          {
+            "node": "¿Se creó?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Se creó?": {
+      "main": [
+        [
+          {
+            "node": "Sheets: registrar cita",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Confirmación",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sheets: registrar cita": {
+      "main": [
+        [
+          {
+            "node": "Avisar a Alex: cita nueva",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Avisar a Alex: cita nueva": {
+      "main": [
+        [
+          {
+            "node": "Confirmación",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calendar: mis citas": {
+      "main": [
+        [
+          {
+            "node": "Armar mis citas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calendar: cancelar evento": {
+      "main": [
+        [
+          {
+            "node": "¿Se canceló?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Se canceló?": {
+      "main": [
+        [
+          {
+            "node": "Sheets: registrar cancelación",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Cancelación",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sheets: registrar cancelación": {
+      "main": [
+        [
+          {
+            "node": "Avisar a Alex: cancelación",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Avisar a Alex: cancelación": {
+      "main": [
+        [
+          {
+            "node": "Cancelación",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Armar horarios libres": {
+      "main": [
+        [
+          {
+            "node": "Salida Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Confirmación": {
+      "main": [
+        [
+          {
+            "node": "Salida Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Armar mis citas": {
+      "main": [
+        [
+          {
+            "node": "Salida Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cancelación": {
+      "main": [
+        [
+          {
+            "node": "Salida Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Avisar a Alex: pide asesor": {
+      "main": [
+        [
+          {
+            "node": "Salida Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Salida Telegram": {
+      "main": [
+        [
+          {
+            "node": "Responder a Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Bogota"
+  },
+  "pinData": {}
+}
