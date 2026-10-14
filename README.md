@@ -4,6 +4,8 @@ Asistente conversacional para **agendar, consultar y cancelar citas**, construid
 
 **Pruébalo en Telegram:** [@ClinicaSonrisaDemounBot](https://t.me/ClinicaSonrisaDemounBot). Las citas que agendes son de prueba.
 
+![Demo en movimiento: agendar una cita en Telegram, de principio a fin](docs/capturas/demo.gif)
+
 ![Recorrido del bot: menú, servicio y día, horarios libres, confirmación y mis citas](docs/capturas/recorrido.jpg)
 
 ## Qué hace
