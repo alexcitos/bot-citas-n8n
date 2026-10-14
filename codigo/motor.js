@@ -1,6 +1,7 @@
 // 🧠 Motor de citas: decide qué responder según el paso en que va cada
 // persona. No depende del canal. Devuelve una "accion":
-//   responder | disponibilidad | crear | listar | cancelar | humano
+//   responder | disponibilidad | crear | listar | cancelar | humano |
+//   agendar (revisa el límite de citas) | reprogramar
 // El estado de cada conversación se guarda en los datos estáticos del
 // workflow (persisten entre ejecuciones de producción).
 const e = $input.first().json;
@@ -71,6 +72,12 @@ const menu = (prefijo = '') => {
 const resumen = () => {
   s.paso = 'confirmar';
   const srv = servicioPorId(s.servicio);
+  if (s.modo === 'reprogramar') {
+    return resp(
+      `🔄 <b>Revisa el cambio</b>\n\n• ${esc(srv.nombre)} · ${esc(s.nombre)}\n• Antes: ${etiquetaFecha(s.cita.fecha)}, ${s.cita.hora}\n• Ahora: <b>${etiquetaFecha(s.fecha)}, ${s.hora}</b>\n\n¿Confirmamos el cambio?`,
+      [[{ t: '✅ Confirmar cambio', d: 'confirmar:si' }, { t: '❌ Dejarla como estaba', d: 'confirmar:no' }]],
+    );
+  }
   return resp(
     `📋 <b>Revisa tu cita</b>\n\n• Servicio: ${esc(srv.nombre)} (${srv.min} min)\n• Fecha: ${etiquetaFecha(s.fecha)}\n• Hora: ${s.hora}\n• A nombre de: ${esc(s.nombre)}\n\n¿La confirmamos?`,
     [[{ t: '✅ Confirmar', d: 'confirmar:si' }, { t: '❌ Cancelar', d: 'confirmar:no' }]],
@@ -86,17 +93,31 @@ if (b === 'menu:inicio' || ['/start', 'hola', 'menu', 'menú', 'inicio', 'buenas
 }
 
 if (b === 'menu:agendar') {
+  // El nodo «Revisar límite» consulta las citas vigentes y muestra los servicios.
   s = { paso: 'servicio', t: ahora };
-  return resp('¿Qué servicio necesitas?', [
-    ...cfg.servicios.map((x) => [{ t: `${x.nombre} · ${x.min} min`, d: `srv:${x.id}` }]),
-    filaMenu,
-  ]);
+  return salida('agendar', { desde: new Date(ahora).toISOString() });
+}
+
+if (b.startsWith('reprog:')) {
+  const id = b.slice(7);
+  const cita = (s.citas || []).find((x) => x.id === id);
+  if (!cita) return menu('No encontré esa cita. Revisa de nuevo en «Mis citas».\n\n');
+  const srv = cfg.servicios.find((x) => x.nombre === cita.servicio);
+  if (!srv) return menu('Esa cita no se puede reprogramar desde aquí.\n\n');
+  s = { paso: 'dia', servicio: srv.id, modo: 'reprogramar', evento_id: id, cita, nombre: cita.nombre, citas: s.citas, t: ahora };
+  const dias = diasDisponibles(srv.min);
+  const filas = [];
+  for (let i = 0; i < dias.length; i += 2) filas.push(dias.slice(i, i + 2).map((f) => ({ t: etiquetaFecha(f), d: `dia:${f}` })));
+  return resp(`🔄 Reprogramar <b>${esc(srv.nombre)}</b> (hoy: ${etiquetaFecha(cita.fecha)}, ${cita.hora}).\n¿A qué día la movemos?`, [...filas, filaMenu]);
 }
 
 if (b.startsWith('srv:')) {
   const srv = servicioPorId(b.slice(4));
   if (!srv) return menu();
-  s = { paso: 'dia', servicio: srv.id, t: ahora };
+  const conservar = s.modo === 'reprogramar' && s.servicio === srv.id
+    ? { modo: s.modo, evento_id: s.evento_id, cita: s.cita, nombre: s.nombre, citas: s.citas }
+    : {};
+  s = { paso: 'dia', servicio: srv.id, ...conservar, t: ahora };
   const dias = diasDisponibles(srv.min);
   if (!dias.length) return resp('No hay días disponibles en este momento. 😕', [filaMenu]);
   const filas = [];
@@ -119,6 +140,7 @@ if (b.startsWith('hora:')) {
   const h = b.slice(5);
   if (s.paso !== 'hora' || !(s.horas || []).includes(h)) return menu('Ese horario ya no está disponible.\n\n');
   s.hora = h;
+  if (s.modo === 'reprogramar') return resumen();
   s.paso = 'nombre';
   const botones = e.nombre ? [[{ t: `Usar «${e.nombre.slice(0, 40)}»`, d: 'nombre:perfil' }], filaMenu] : [filaMenu];
   return resp('✍️ ¿A nombre de quién agendamos la cita?\nEscribe nombre y apellido.', botones);
@@ -136,6 +158,28 @@ if (s.paso === 'nombre' && e.texto) {
   }
   s.nombre = n;
   return resumen();
+}
+
+if (b === 'confirmar:si' && s.paso === 'confirmar' && s.modo === 'reprogramar') {
+  const srv = servicioPorId(s.servicio);
+  const fin = sumarMin(s.hora, srv.min);
+  const registro = new Date(ahora + OFF_MS).toISOString().slice(0, 16).replace('T', ' ');
+  const antes = s.cita;
+  const cita = { id_cita: antes.id_cita || '', servicio: srv.nombre, min: srv.min, fecha: s.fecha, hora: s.hora, fin, nombre: s.nombre };
+  const evento_id = s.evento_id;
+  s = { paso: 'menu', t: ahora };
+  return salida('reprogramar', {
+    evento_id,
+    cita,
+    antes,
+    cambios: {
+      start: { dateTime: `${cita.fecha}T${cita.hora}:00${cfg.offset}`, timeZone: cfg.zona },
+      end: { dateTime: `${cita.fecha}T${fin}:00${cfg.offset}`, timeZone: cfg.zona },
+      description: `Cita ${cita.id_cita} agendada por el bot DEMO (canal: ${e.canal}).\nReprogramada el ${registro}; antes: ${antes.fecha} ${antes.hora}.\nNegocio ficticio de demostración.`,
+    },
+    fila: [cita.id_cita, registro, e.canal, e.usuario_id, cita.nombre, srv.nombre, cita.fecha, cita.hora, fin, 'reprogramada', evento_id],
+    aviso: `🦷 Cita reprogramada (DEMO)\n${srv.nombre} · ${cita.nombre}\nAntes: ${etiquetaFecha(antes.fecha)} ${antes.hora}\nAhora: ${etiquetaFecha(cita.fecha)} ${cita.hora}\nCanal: ${e.canal}`,
+  });
 }
 
 if (b === 'confirmar:si' && s.paso === 'confirmar') {
@@ -159,16 +203,32 @@ if (b === 'confirmar:si' && s.paso === 'confirmar') {
   });
 }
 
-if (b === 'confirmar:no') return menu('❌ Listo, no agendamos nada.\n\n');
+if (b === 'confirmar:no') return menu(s.modo === 'reprogramar' ? '👌 Listo, tu cita queda como estaba.\n\n' : '❌ Listo, no agendamos nada.\n\n');
 
 if (b === 'menu:mis') {
   return salida('listar', { desde: new Date(ahora).toISOString() });
 }
 
+// Cancelar pide confirmación: evita cancelaciones por un toque accidental
+// (también en botones de mensajes viejos que siguen visibles en el chat).
 if (b.startsWith('cancelar:')) {
   const id = b.slice(9);
   const cita = (s.citas || []).find((x) => x.id === id);
   if (!cita) return menu('No encontré esa cita. Revisa de nuevo en «Mis citas».\n\n');
+  s.paso = 'confirmar_cancelacion';
+  s.cancelar_id = id;
+  return resp(
+    `⚠️ ¿Seguro que quieres cancelar esta cita?\n\n• ${esc(cita.servicio)} · ${esc(cita.nombre || 'sin nombre')}\n• ${etiquetaFecha(cita.fecha)}, ${cita.hora}`,
+    [[{ t: '✅ Sí, cancelarla', d: 'cancelar_si' }, { t: '↩️ No, mantenerla', d: 'menu:mis' }]],
+  );
+}
+
+if (b === 'cancelar_si') {
+  const id = s.paso === 'confirmar_cancelacion' ? s.cancelar_id : null;
+  const cita = id && (s.citas || []).find((x) => x.id === id);
+  if (!cita) return menu('No hay ninguna cancelación pendiente. Revisa en «Mis citas».\n\n');
+  s.paso = 'menu';
+  delete s.cancelar_id;
   s.citas = s.citas.filter((x) => x.id !== id);
   const registro = new Date(ahora + OFF_MS).toISOString().slice(0, 16).replace('T', ' ');
   return salida('cancelar', {

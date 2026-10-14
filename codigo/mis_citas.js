@@ -1,5 +1,6 @@
-// Lista las próximas citas de esta persona (filtradas en Google Calendar
-// por la propiedad privada "usuario") y ofrece cancelarlas.
+// Lista las próximas citas de esta cuenta (filtradas en Google Calendar
+// por la propiedad privada "usuario"), con el nombre de cada una, y ofrece
+// reprogramarlas o cancelarlas por número.
 const m = $('Motor').first().json;
 const r = $input.first().json;
 const sd = $getWorkflowStaticData('global');
@@ -26,6 +27,7 @@ const citas = r.items.filter((x) => x.start && x.start.dateTime).map((x) => {
 
 s.citas = citas;
 s.paso = 'menu';
+delete s.modo;
 s.t = Date.now();
 sd.sesiones[m.clave] = s;
 
@@ -33,8 +35,14 @@ if (!citas.length) {
   return salir('No tienes citas próximas. ¿Agendamos una?', [[{ t: '📅 Agendar cita', d: 'menu:agendar' }], filaMenu]);
 }
 const etiqueta = (f) => { const d = new Date(f + 'T12:00:00Z'); return `${DIAS[d.getUTCDay()]} ${d.getUTCDate()} ${MESES[d.getUTCMonth()]}`; };
-const lineas = citas.map((c) => `• ${esc(c.servicio)}: ${etiqueta(c.fecha)}, ${c.hora}`);
+const lineas = citas.map((c, i) => `${i + 1}. ${esc(c.servicio)} · ${esc(c.nombre || 'sin nombre')}\n    ${etiqueta(c.fecha)}, ${c.hora} – ${c.fin}`);
 return salir(
-  `🗓️ <b>Tus próximas citas</b>\n\n${lineas.join('\n')}`,
-  [...citas.map((c) => [{ t: `❌ Cancelar ${etiqueta(c.fecha)} ${c.hora}`, d: `cancelar:${c.id}` }]), filaMenu],
+  `🗓️ <b>Tus próximas citas</b>\n\n${lineas.join('\n')}\n\n<i>Cada botón actúa solo sobre la cita con ese número.</i>`,
+  [
+    ...citas.map((c, i) => [
+      { t: `🔄 Reprogramar ${i + 1}`, d: `reprog:${c.id}` },
+      { t: `❌ Cancelar ${i + 1}`, d: `cancelar:${c.id}` },
+    ]),
+    filaMenu,
+  ],
 );

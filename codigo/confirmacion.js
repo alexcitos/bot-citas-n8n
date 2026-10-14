@@ -15,7 +15,7 @@ return [{
   json: {
     ...m,
     mensaje: {
-      texto: `✅ <b>¡Cita agendada!</b>\n\n• ${esc(m.cita.servicio)}\n• ${fecha}, ${m.cita.hora} – ${m.cita.fin}\n• A nombre de: ${esc(m.cita.nombre)}\n• Código: <code>${m.cita.id_cita}</code>\n\nPuedes verla o cancelarla en «Mis citas».`,
+      texto: `✅ <b>¡Cita agendada!</b>\n\n• ${esc(m.cita.servicio)}\n• ${fecha}, ${m.cita.hora} – ${m.cita.fin}\n• A nombre de: ${esc(m.cita.nombre)}\n• Código: <code>${m.cita.id_cita}</code>\n\nPuedes reprogramarla o cancelarla en «Mis citas».`,
       botones: [[{ t: '🗓️ Mis citas', d: 'menu:mis' }], filaMenu],
     },
   },

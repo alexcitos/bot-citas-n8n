@@ -29,5 +29,6 @@ return [{
     paso_min: 30,          // cada cuánto se ofrece un turno
     dias_adelante: 7,      // hasta cuántos días se puede agendar
     anticipacion_min: 60,  // mínimo de minutos entre "ahora" y la cita
+    max_citas: 3,          // citas futuras permitidas por cuenta (evita abuso en la demo)
   },
 }];

@@ -13,7 +13,10 @@ Asistente conversacional para **agendar, consultar y cancelar citas**, construid
   - crea el evento en Google Calendar
   - agrega una fila en Google Sheets, que funciona como historial: agendadas y canceladas
   - avisa al negocio por Telegram
-- **Mis citas:** cada persona ve **solo sus** citas futuras y puede cancelarlas; el turno queda libre al instante.
+- **Mis citas:** cada cuenta ve **solo sus** citas futuras, numeradas y con el nombre de cada una, y puede:
+  - **reprogramarlas:** el mismo evento se mueve a otro día y hora libres, sin pedir de nuevo el nombre
+  - **cancelarlas:** con confirmación previa, para evitar cancelaciones por un toque accidental; el turno queda libre al instante
+- **Límite por cuenta:** máximo 3 citas futuras en la demo, configurable, para evitar abusos.
 - **Hablar con una persona:** pasa la conversación al equipo con un aviso inmediato.
 - **Recuerda la conversación:** cada usuario tiene su propio estado, que se reinicia tras 2 horas sin actividad.
 
@@ -25,7 +28,7 @@ flowchart LR
     WA[WhatsApp<br/>en preparación] -.-> IN
     IN --> M[Motor de citas<br/>máquina de estados]
     M -->|disponibilidad| FB[Calendar freeBusy]
-    M -->|crear / cancelar| EV[Calendar eventos]
+    M -->|crear / mover / cancelar| EV[Calendar eventos]
     EV --> SH[Sheets historial]
     SH --> AV[Aviso al negocio<br/>Telegram]
     M --> OUT[Salida del canal]
@@ -40,7 +43,7 @@ El workflow tiene un único **motor que no depende del canal**. Cada canal solo 
 - **Webhook propio en lugar del nodo Telegram Trigger.** La respuesta se devuelve en la misma petición HTTP (método `sendMessage` en el cuerpo). Así los teclados de botones son dinámicos y **el token del bot no queda guardado dentro del workflow**.
 - **Webhook autenticado:** Telegram envía la cabecera `X-Telegram-Bot-Api-Secret-Token` y n8n rechaza cualquier petición sin ella (credencial *Header Auth*).
 - **Cuenta de servicio de Google** en vez de OAuth. No vence, a diferencia de OAuth en modo de prueba, que expira cada 7 días, y solo tiene acceso al calendario y la hoja que se le comparten.
-- **Citas etiquetadas por usuario:** cada evento lleva `extendedProperties.private.usuario = canal:id`, que se usa para listar y cancelar solo las citas propias. Antes de cancelar, el bot comprueba que la cita esté en la lista que se le mostró a esa persona.
+- **Citas etiquetadas por usuario:** cada evento lleva `extendedProperties.private.usuario = canal:id`, que se usa para listar y cancelar solo las citas propias. Antes de cancelar o reprogramar, el bot comprueba que la cita esté en la lista que se le mostró a esa persona.
 - **Errores controlados:** las llamadas a Google y Telegram continúan aunque fallen, el usuario recibe un mensaje claro y Telegram nunca recibe un error 500, así que no reintenta en bucle.
 - **Zona horaria explícita:** Bogotá (UTC-5) en el cálculo de turnos y en los eventos.
 
