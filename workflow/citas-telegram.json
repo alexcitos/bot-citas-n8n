@@ -189,9 +189,10 @@
     {
       "parameters": {
         "chatId": "={{ $('Motor').first().json.cfg.alex_chat_id }}",
-        "text": "={{ $('Motor').first().json.aviso }}",
+        "text": "={{ $('Motor').first().json.aviso.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }}",
         "additionalFields": {
-          "appendAttribution": false
+          "appendAttribution": false,
+          "parse_mode": "HTML"
         }
       },
       "id": "abb35361-615a-4604-90f6-1c40d8b02969",
@@ -335,9 +336,10 @@
     {
       "parameters": {
         "chatId": "={{ $('Motor').first().json.cfg.alex_chat_id }}",
-        "text": "={{ $('Motor').first().json.aviso }}",
+        "text": "={{ $('Motor').first().json.aviso.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }}",
         "additionalFields": {
-          "appendAttribution": false
+          "appendAttribution": false,
+          "parse_mode": "HTML"
         }
       },
       "id": "35578a02-ddf8-4bbb-ae9d-c74724b414a3",
@@ -367,9 +369,10 @@
     {
       "parameters": {
         "chatId": "={{ $('Motor').first().json.cfg.alex_chat_id }}",
-        "text": "={{ $('Motor').first().json.aviso }}",
+        "text": "={{ $('Motor').first().json.aviso.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }}",
         "additionalFields": {
-          "appendAttribution": false
+          "appendAttribution": false,
+          "parse_mode": "HTML"
         }
       },
       "id": "e441d1fc-9fe4-4eb4-a947-a03f5eb28c76",
@@ -499,9 +502,10 @@
     {
       "parameters": {
         "chatId": "={{ $('Motor').first().json.cfg.alex_chat_id }}",
-        "text": "={{ $('Motor').first().json.aviso }}",
+        "text": "={{ $('Motor').first().json.aviso.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }}",
         "additionalFields": {
-          "appendAttribution": false
+          "appendAttribution": false,
+          "parse_mode": "HTML"
         }
       },
       "id": "d19d6f39-489f-4776-85af-0f589b76555f",

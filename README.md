@@ -1,5 +1,7 @@
 # Bot de citas con n8n: Telegram hoy, WhatsApp mañana
 
+[![Hablemos](https://img.shields.io/badge/Hablemos-alexrope.dev-2563eb?style=for-the-badge)](https://alexrope.dev/?utm_source=github&utm_medium=readme&utm_campaign=bot-citas-n8n#contacto)
+
 Asistente conversacional para **agendar, consultar y cancelar citas**, construido en **n8n** y conectado a **Google Calendar** y **Google Sheets**. La demo usa un negocio **ficticio**, *Clínica Dental Sonrisa · DEMO*, y se adapta a cualquier negocio que trabaje con citas (consultorios, barberías, asesorías, gimnasios) editando un solo nodo de configuración.
 
 **Pruébalo en Telegram:** [@ClinicaSonrisaDemounBot](https://t.me/ClinicaSonrisaDemounBot). Las citas que agendes son de prueba.
@@ -114,6 +116,12 @@ No hace falta tocar el motor.
   - salida con mensajes interactivos (botones y listas)
 - [ ] Recordatorio automático 24 horas antes, con confirmación.
 - [ ] Volver a comprobar la disponibilidad justo antes de crear el evento, para evitar dos reservas simultáneas en el mismo turno.
+
+## ¿Necesitas algo así para tu negocio?
+
+Implemento bots de citas para consultorios, barberías, centros de estética y cualquier negocio que agende, además de automatizaciones con n8n y sitios WordPress a la medida.
+
+👉 **[Escríbeme en alexrope.dev](https://alexrope.dev/?utm_source=github&utm_medium=readme&utm_campaign=bot-citas-n8n#contacto)** · [LinkedIn](https://www.linkedin.com/in/alexrodriguezp) · [Más proyectos](https://github.com/alexcitos)
 
 ## Autor
 **Alex Rodríguez P.**: desarrollo WordPress, infraestructura y automatización.
